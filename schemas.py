@@ -8,6 +8,14 @@ class SkipReason(str, Enum):
     VIOLENCE = "violence"
     INAPPROPRIATE = "inappropriate"
     EIGHTEEN_PLUS = "eighteen_plus"
+    UNKNOWN = "unknown"  # legacy free-text data only; not valid on create/update
+
+
+SELECTABLE_SKIP_REASONS = (
+    SkipReason.VIOLENCE,
+    SkipReason.INAPPROPRIATE,
+    SkipReason.EIGHTEEN_PLUS,
+)
 
 
 class CutSceneSchema(BaseModel):

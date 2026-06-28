@@ -16,6 +16,7 @@ from schemas import (
     ExistsResponse,
     MovieResponse,
     MovieSchema,
+    SELECTABLE_SKIP_REASONS,
     SkipReason,
     UpdateEpisodeSchema,
     UpdateMovieSchema,
@@ -102,14 +103,34 @@ SKIP_REASON_LABELS = {
     SkipReason.VIOLENCE: "Violence",
     SkipReason.INAPPROPRIATE: "Inappropriate",
     SkipReason.EIGHTEEN_PLUS: "18+",
+    SkipReason.UNKNOWN: "Unknown (please re-select)",
 }
+
+_LEGACY_REASON_MAP = {
+    "violence": SkipReason.VIOLENCE,
+    "voilence": SkipReason.VIOLENCE,
+    "inappropriate": SkipReason.INAPPROPRIATE,
+    "eighteen_plus": SkipReason.EIGHTEEN_PLUS,
+    "18_plus": SkipReason.EIGHTEEN_PLUS,
+    "18+": SkipReason.EIGHTEEN_PLUS,
+}
+
+
+def _parse_stored_reason(raw: str) -> SkipReason:
+    key = raw.strip().lower().replace(" ", "_")
+    if key in _LEGACY_REASON_MAP:
+        return _LEGACY_REASON_MAP[key]
+    try:
+        return SkipReason(key)
+    except ValueError:
+        return SkipReason.UNKNOWN
 
 
 @router.get("/skip-reasons")
 def list_skip_reasons():
     return [
         {"value": reason.value, "label": SKIP_REASON_LABELS[reason]}
-        for reason in SkipReason
+        for reason in SELECTABLE_SKIP_REASONS
     ]
 
 
@@ -118,7 +139,7 @@ def _cut_scenes_to_response(scenes: List[CutScene]) -> List[CutSceneResponse]:
         CutSceneResponse(
             start=s.start_time,
             end=s.end_time,
-            reason=SkipReason(s.reason),
+            reason=_parse_stored_reason(s.reason),
         )
         for s in scenes
     ]
