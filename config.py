@@ -16,11 +16,23 @@ def _clean_url(url: Optional[str]) -> Optional[str]:
     return url.strip().strip('"').strip("'")
 
 
-DATABASE_URL = _clean_url(os.getenv("DATABASE_URL")) or _clean_url(
-    os.getenv("DATABASE_PUBLIC_URL")
-)
+private_url = _clean_url(os.getenv("DATABASE_URL"))
+public_url = _clean_url(os.getenv("DATABASE_PUBLIC_URL"))
 
-if not DATABASE_URL:
+# Public URL works across Railway projects; internal (*.railway.internal) does not.
+if public_url:
+    DATABASE_URL = public_url
+elif private_url and "railway.internal" not in private_url:
+    DATABASE_URL = private_url
+elif private_url:
+    raise RuntimeError(
+        "DATABASE_URL uses postgres.railway.internal, which only works when "
+        "Postgres and this app are in the SAME Railway project. "
+        "You have two projects — in the backend service Variables, delete "
+        "DATABASE_URL and set DATABASE_PUBLIC_URL to your Postgres public URL "
+        "(Postgres service → Connect → Public URL), or merge both into one project."
+    )
+else:
     DATABASE_URL = "postgresql+psycopg://apple@localhost/movies_db"
 
 if DATABASE_URL.startswith("postgres://"):
