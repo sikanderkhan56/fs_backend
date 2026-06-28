@@ -1,12 +1,19 @@
+from enum import Enum
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
+class SkipReason(str, Enum):
+    VIOLENCE = "violence"
+    INAPPROPRIATE = "inappropriate"
+    EIGHTEEN_PLUS = "eighteen_plus"
+
+
 class CutSceneSchema(BaseModel):
     start: float
     end: float
-    reason: str
+    reason: SkipReason
 
 
 class MovieSchema(BaseModel):
@@ -29,7 +36,7 @@ class EpisodeSchema(BaseModel):
 class CutSceneResponse(BaseModel):
     start: float
     end: float
-    reason: str
+    reason: SkipReason
 
 
 class MovieResponse(BaseModel):
@@ -53,3 +60,42 @@ class CreateSuccessResponse(BaseModel):
     status: Literal["success"] = "success"
     content_type: Literal["movie", "episode"]
     id: str
+
+
+class UpdateSuccessResponse(BaseModel):
+    status: Literal["success"] = "success"
+    content_type: Literal["movie", "episode"]
+    id: str
+
+
+class DeleteSuccessResponse(BaseModel):
+    status: Literal["success"] = "success"
+    content_type: Literal["movie", "episode"]
+    id: str
+
+
+class ExistsResponse(BaseModel):
+    exists: bool
+    movie_id: Optional[str] = None
+    title: Optional[str] = None
+    release_year: Optional[int] = None
+    episode_id: Optional[str] = None
+    series_title: Optional[str] = None
+    season_number: Optional[int] = None
+    episode_number: Optional[int] = None
+    scene_count: int = 0
+
+
+class UpdateMovieSchema(BaseModel):
+    title: str
+    release_year: int = Field(..., ge=1888, le=2100)
+    duration: float
+    cut_scenes: List[CutSceneSchema]
+
+
+class UpdateEpisodeSchema(BaseModel):
+    series_title: str
+    season_number: int = Field(..., ge=1)
+    episode_number: int = Field(..., ge=1)
+    duration: float
+    cut_scenes: List[CutSceneSchema]
