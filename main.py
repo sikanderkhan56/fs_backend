@@ -1,10 +1,34 @@
+import logging
+import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db
 from routes import router
 
-app = FastAPI(title="Movie Cut Scenes API")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    for attempt in range(1, 6):
+        try:
+            init_db()
+            break
+        except Exception as exc:
+            if attempt == 5:
+                raise
+            logger.warning(
+                "Database not ready (attempt %s/5): %s", attempt, exc
+            )
+            time.sleep(2 ** attempt)
+    yield
+
+
+app = FastAPI(title="Movie Cut Scenes API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -12,8 +36,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-init_db()
 
 app.include_router(router)
 
