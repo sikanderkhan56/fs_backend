@@ -2,7 +2,7 @@ import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -16,6 +16,7 @@ from schemas import (
     ExistsResponse,
     MovieResponse,
     MovieSchema,
+    MovieSuggestionResponse,
     SELECTABLE_SKIP_REASONS,
     SkipReason,
     UpdateEpisodeSchema,
@@ -224,6 +225,55 @@ def movie_exists(
         release_year=movie.release_year,
         scene_count=_scene_count(db, "movie", movie.movie_id),
     )
+
+
+@router.get("/movie/suggestions", response_model=List[MovieSuggestionResponse])
+def suggest_movies(
+    query: str = Query(..., min_length=1, max_length=100),
+    limit: int = Query(10, ge=1, le=20),
+    db: Session = Depends(get_db),
+):
+    normalized_query = _normalize_text(query).lower()
+    if not normalized_query:
+        return []
+
+    scene_counts = (
+        db.query(
+            CutScene.reference_id.label("movie_id"),
+            func.count(CutScene.id).label("scene_count"),
+        )
+        .filter(CutScene.content_type == "movie")
+        .group_by(CutScene.reference_id)
+        .subquery()
+    )
+
+    title = func.lower(Movie.title)
+    rows = (
+        db.query(
+            Movie,
+            func.coalesce(scene_counts.c.scene_count, 0).label("scene_count"),
+        )
+        .outerjoin(scene_counts, scene_counts.c.movie_id == Movie.movie_id)
+        .filter(title.contains(normalized_query, autoescape=True))
+        .order_by(
+            case((title == normalized_query, 0), else_=1),
+            case((title.startswith(normalized_query, autoescape=True), 0), else_=1),
+            title.asc(),
+            Movie.release_year.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        MovieSuggestionResponse(
+            movie_id=movie.movie_id,
+            title=movie.title,
+            release_year=movie.release_year,
+            scene_count=scene_count,
+        )
+        for movie, scene_count in rows
+    ]
 
 
 @router.post("/movie", response_model=CreateSuccessResponse, status_code=201)

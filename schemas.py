@@ -55,6 +55,13 @@ class MovieResponse(BaseModel):
     cut_scenes: List[CutSceneResponse]
 
 
+class MovieSuggestionResponse(BaseModel):
+    movie_id: str
+    title: str
+    release_year: int
+    scene_count: int
+
+
 class EpisodeResponse(BaseModel):
     episode_id: str
     series_title: str
