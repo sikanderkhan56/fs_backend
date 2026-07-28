@@ -2,15 +2,19 @@ import json
 import logging
 import os
 import re
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
-
-from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
+GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
+)
 AI_PREVIEW_MESSAGE = (
-    "These are ESTIMATED timelines based on Claude AI analysis. "
+    "These are ESTIMATED timelines based on Gemini AI analysis. "
     "Use frame-by-frame preview to confirm exact timing for your specific video version."
 )
 POST_PREVIEW_MESSAGE = (
@@ -20,20 +24,17 @@ POST_PREVIEW_MESSAGE = (
 
 
 class MovieAIService:
-    def __init__(self) -> None:
-        self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-
     def get_scene_preview(
         self, movie_title: str, release_year: Optional[int] = None
     ) -> Dict[str, Any]:
-        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
         if not api_key:
             return {
                 "success": False,
                 "has_inappropriate_content": False,
                 "estimated_scenes": [],
                 "message": "AI preview unavailable",
-                "error": "ANTHROPIC_API_KEY is not configured",
+                "error": "GEMINI_API_KEY is not configured",
             }
 
         year_text = f" ({release_year})" if release_year else ""
@@ -56,13 +57,16 @@ IMPORTANT:
 - Only include clearly inappropriate scenes
 - Return ONLY valid JSON"""
 
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "maxOutputTokens": 500,
+                "temperature": 0.2,
+            },
+        }
+
         try:
-            response = self.client.messages.create(
-                model=CLAUDE_MODEL,
-                max_tokens=500,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw_text = response.content[0].text.strip()
+            raw_text = self._call_gemini(api_key, payload)
             parsed = self._parse_json_response(raw_text)
 
             return {
@@ -75,7 +79,7 @@ IMPORTANT:
                 "error": None,
             }
         except json.JSONDecodeError as exc:
-            logger.exception("Failed to parse Claude JSON response")
+            logger.exception("Failed to parse Gemini JSON response")
             return {
                 "success": False,
                 "has_inappropriate_content": False,
@@ -84,7 +88,7 @@ IMPORTANT:
                 "error": f"JSON parse error: {exc}",
             }
         except Exception as exc:
-            logger.exception("Claude API request failed")
+            logger.exception("Gemini API request failed")
             return {
                 "success": False,
                 "has_inappropriate_content": False,
@@ -92,6 +96,33 @@ IMPORTANT:
                 "message": "AI preview request failed",
                 "error": str(exc),
             }
+
+    def _call_gemini(self, api_key: str, payload: Dict[str, Any]) -> str:
+        url = f"{GEMINI_API_URL}?key={api_key}"
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Gemini HTTP {exc.code}: {error_body}") from exc
+
+        candidates = body.get("candidates") or []
+        if not candidates:
+            raise RuntimeError(f"Gemini returned no candidates: {body}")
+
+        parts = candidates[0].get("content", {}).get("parts") or []
+        text_parts = [part.get("text", "") for part in parts if part.get("text")]
+        if not text_parts:
+            raise RuntimeError(f"Gemini returned empty text: {body}")
+
+        return "\n".join(text_parts).strip()
 
     def _parse_json_response(self, raw_text: str) -> Dict[str, Any]:
         cleaned = raw_text.strip()
