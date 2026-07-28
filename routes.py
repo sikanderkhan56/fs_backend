@@ -6,6 +6,7 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from database import get_db
+from ai_service import POST_PREVIEW_MESSAGE, ai_service
 from models import CutScene, Episode, Movie
 from schemas import (
     CreateSuccessResponse,
@@ -314,6 +315,75 @@ def search_movie(
         raise HTTPException(status_code=404, detail="Movie not found")
 
     return _movie_response(movie, _get_movie_scenes(db, movie.movie_id))
+
+
+@router.post("/movie/{movie_id}/preview-scenes")
+def preview_scenes_ai(
+    movie_id: str,
+    title: str = Query(..., min_length=1),
+    release_year: int = Query(..., ge=1888, le=2100),
+):
+    ai_result = ai_service.get_scene_preview(title, release_year)
+
+    if not ai_result["success"]:
+        raise HTTPException(
+            status_code=503,
+            detail=ai_result.get("error") or ai_result.get("message"),
+        )
+
+    return {
+        "source": "ai_preview",
+        "movie_id": movie_id,
+        "title": title,
+        "release_year": release_year,
+        "has_inappropriate_content": ai_result["has_inappropriate_content"],
+        "estimated_scenes": ai_result["estimated_scenes"],
+        "message": POST_PREVIEW_MESSAGE,
+    }
+
+
+@router.get("/movie/{movie_id}/preview-scenes")
+def preview_scenes(
+    movie_id: str,
+    title: str = Query(..., min_length=1),
+    release_year: int = Query(..., ge=1888, le=2100),
+    db: Session = Depends(get_db),
+):
+    movie = db.query(Movie).filter(Movie.movie_id == movie_id).first()
+    if not movie:
+        movie = _find_movie(db, title, release_year)
+
+    if movie:
+        scenes = _get_movie_scenes(db, movie.movie_id)
+        return {
+            "source": "database",
+            "movie_id": movie.movie_id,
+            "title": movie.title,
+            "release_year": movie.release_year,
+            "cut_scenes": [
+                scene.model_dump()
+                for scene in _cut_scenes_to_response(scenes)
+            ],
+            "message": "Cut scenes loaded from database",
+        }
+
+    ai_result = ai_service.get_scene_preview(title, release_year)
+
+    if not ai_result["success"]:
+        raise HTTPException(
+            status_code=503,
+            detail=ai_result.get("error") or ai_result.get("message"),
+        )
+
+    return {
+        "source": "ai_preview",
+        "movie_id": movie_id,
+        "title": title,
+        "release_year": release_year,
+        "has_inappropriate_content": ai_result["has_inappropriate_content"],
+        "estimated_scenes": ai_result["estimated_scenes"],
+        "message": ai_result["message"],
+    }
 
 
 @router.get("/movie/{movie_id}", response_model=MovieResponse)

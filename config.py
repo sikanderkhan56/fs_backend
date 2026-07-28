@@ -42,5 +42,7 @@ elif DATABASE_URL.startswith("postgresql://"):
         "postgresql://", "postgresql+psycopg://", 1
     )
 
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
 _parsed = urlparse(DATABASE_URL)
 logger.info("Database host: %s:%s", _parsed.hostname, _parsed.port or 5432)
