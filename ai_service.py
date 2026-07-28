@@ -43,9 +43,9 @@ class MovieAIService:
 Provide ESTIMATED timelines for inappropriate scenes (do NOT provide exact timings).
 Include categories: Violence, Language/Profanity, Sexual Content, Drug Use, Other
 
-Format response as JSON ONLY (no other text):
+Return a JSON object with this exact shape:
 {{
-    "has_inappropriate_content": true/false,
+    "has_inappropriate_content": true,
     "estimated_scenes": [
         {{"category": "Violence", "estimated_time": "~20:30-23:45", "description": "Fight scene"}}
     ]
@@ -55,13 +55,16 @@ IMPORTANT:
 - Use ~ symbol for estimates (e.g., ~1:30:00)
 - Times should be APPROXIMATE, not exact
 - Only include clearly inappropriate scenes
+- Keep estimated_scenes to at most 8 items
+- Descriptions must be short (under 12 words)
 - Return ONLY valid JSON"""
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "maxOutputTokens": 500,
+                "maxOutputTokens": 1024,
                 "temperature": 0.2,
+                "responseMimeType": "application/json",
             },
         }
 
@@ -107,7 +110,7 @@ IMPORTANT:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=45) as response:
+            with urllib.request.urlopen(request, timeout=60) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
@@ -117,10 +120,14 @@ IMPORTANT:
         if not candidates:
             raise RuntimeError(f"Gemini returned no candidates: {body}")
 
-        parts = candidates[0].get("content", {}).get("parts") or []
+        candidate = candidates[0]
+        finish_reason = candidate.get("finishReason")
+        parts = candidate.get("content", {}).get("parts") or []
         text_parts = [part.get("text", "") for part in parts if part.get("text")]
         if not text_parts:
-            raise RuntimeError(f"Gemini returned empty text: {body}")
+            raise RuntimeError(
+                f"Gemini returned empty text (finishReason={finish_reason}): {body}"
+            )
 
         return "\n".join(text_parts).strip()
 
@@ -129,6 +136,12 @@ IMPORTANT:
         if cleaned.startswith("```"):
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
             cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        # Extract the first JSON object if extra text sneaks in
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1]
 
         parsed = json.loads(cleaned)
         if not isinstance(parsed, dict):
@@ -139,7 +152,7 @@ IMPORTANT:
             estimated_scenes = []
 
         normalized_scenes: List[Dict[str, str]] = []
-        for scene in estimated_scenes:
+        for scene in estimated_scenes[:8]:
             if not isinstance(scene, dict):
                 continue
             normalized_scenes.append(
