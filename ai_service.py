@@ -38,32 +38,24 @@ class MovieAIService:
             }
 
         year_text = f" ({release_year})" if release_year else ""
-        prompt = f"""You are a movie content advisor. Analyze the movie "{movie_title}"{year_text}.
-
-Provide ESTIMATED timelines for inappropriate scenes (do NOT provide exact timings).
-Include categories: Violence, Language/Profanity, Sexual Content, Drug Use, Other
-
-Return a JSON object with this exact shape:
-{{
-    "has_inappropriate_content": true,
-    "estimated_scenes": [
-        {{"category": "Violence", "estimated_time": "~20:30-23:45", "description": "Fight scene"}}
-    ]
-}}
-
-IMPORTANT:
-- Use ~ symbol for estimates (e.g., ~1:30:00)
-- Times should be APPROXIMATE, not exact
-- Only include clearly inappropriate scenes
-- Keep estimated_scenes to at most 8 items
-- Descriptions must be short (under 12 words)
-- Return ONLY valid JSON"""
+        prompt = (
+            f'Movie content advisor for "{movie_title}"{year_text}.\n'
+            "Return JSON only with keys:\n"
+            '- has_inappropriate_content (boolean)\n'
+            "- estimated_scenes (array, max 5 objects)\n"
+            "Each scene object must have: category, estimated_time, description.\n"
+            "Categories: Violence, Language/Profanity, Sexual Content, Drug Use, Other.\n"
+            "Use approximate times with ~ like ~20:30-23:45.\n"
+            "Keep descriptions under 15 words. No markdown."
+        )
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "maxOutputTokens": 1024,
-                "temperature": 0.2,
+                # Thinking models consume tokens before visible output;
+                # keep this high enough for a complete JSON reply.
+                "maxOutputTokens": 2048,
+                "temperature": 0.1,
                 "responseMimeType": "application/json",
             },
         }
@@ -129,7 +121,11 @@ IMPORTANT:
                 f"Gemini returned empty text (finishReason={finish_reason}): {body}"
             )
 
-        return "\n".join(text_parts).strip()
+        # Join without newlines so split JSON fragments reassemble cleanly
+        text = "".join(text_parts).strip()
+        if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+            logger.warning("Gemini finishReason=%s", finish_reason)
+        return text
 
     def _parse_json_response(self, raw_text: str) -> Dict[str, Any]:
         cleaned = raw_text.strip()
@@ -137,7 +133,6 @@ IMPORTANT:
             cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
             cleaned = re.sub(r"\s*```$", "", cleaned)
 
-        # Extract the first JSON object if extra text sneaks in
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -152,7 +147,7 @@ IMPORTANT:
             estimated_scenes = []
 
         normalized_scenes: List[Dict[str, str]] = []
-        for scene in estimated_scenes[:8]:
+        for scene in estimated_scenes[:5]:
             if not isinstance(scene, dict):
                 continue
             normalized_scenes.append(
