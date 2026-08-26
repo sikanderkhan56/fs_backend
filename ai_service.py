@@ -2,16 +2,23 @@ import json
 import logging
 import os
 import re
+import socket
+import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
+import certifi
+
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-flash-latest"
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
+GEMINI_MODELS = (
+    "gemini-flash-lite-latest",  # faster / usually available on free tier
+    "gemini-flash-latest",
+)
+GEMINI_API_URL_TEMPLATE = (
+    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
 AI_PREVIEW_MESSAGE = (
     "These are ESTIMATED timelines based on Gemini AI analysis. "
@@ -21,6 +28,10 @@ POST_PREVIEW_MESSAGE = (
     "These are ESTIMATED timelines. Use frame-by-frame preview to confirm "
     "exact timing for your video version."
 )
+
+# Thinking models can be slow; allow retries for transient timeouts / overload.
+GEMINI_TIMEOUT_SECONDS = 90
+GEMINI_MAX_ATTEMPTS = 3
 
 
 class MovieAIService:
@@ -38,44 +49,45 @@ class MovieAIService:
             }
 
         year_text = f" ({release_year})" if release_year else ""
-        prompt = (
-            f'Movie content advisor for "{movie_title}"{year_text}.\n'
-            "ONLY report scenes that match these rules:\n"
-            "\n"
-            "INCLUDE:\n"
-            "1) Kissing — ONLY romantic mouth-to-mouth kissing or French kissing "
-            "(deep/open-mouth kissing between a man and a woman, or any couple).\n"
-            "2) Sex — sexual intercourse or clear sexual activity.\n"
-            "3) Nudity — a man or woman shown naked, or private parts clearly shown "
-            "(breasts, genitals, buttocks).\n"
-            "\n"
-            "DO NOT INCLUDE (these are allowed / ignore them):\n"
-            "- Kisses on the cheek, forehead, hand, or quick peck kisses\n"
-            "- Violence, blood, fighting, weapons\n"
-            "- Language / profanity\n"
-            "- Drug use\n"
-            "- Scary or intense non-sexual scenes\n"
-            "- Swimwear / underwear that is not full nudity or private-part exposure\n"
-            "\n"
-            "If none of the INCLUDE scenes exist, return has_inappropriate_content "
-            "as false and an empty estimated_scenes array.\n"
-            "\n"
-            "Return JSON only with keys:\n"
-            "- has_inappropriate_content (boolean)\n"
-            "- estimated_scenes (array, max 5 objects)\n"
-            "Each scene object must have: category, estimated_time, description.\n"
-            "Allowed categories ONLY: Kissing, Sexual Content, Nudity.\n"
-            "Use approximate times with ~ like ~20:30-23:45.\n"
-            "Keep descriptions under 15 words. No markdown."
-        )
+        prompt = f"""You are a movie content filter for "{movie_title}"{year_text}.
+
+Task: List ONLY scenes with kissing, sex, or nudity. Ignore everything else.
+
+INCLUDE only these 3 categories:
+1) Kissing — mouth-to-mouth or French kiss only (man-woman, man-man, or woman-woman).
+2) Sexual Content — intercourse or clear sexual activity.
+3) Nudity — naked body, breasts, hips/buttocks, or private parts clearly shown (man or woman).
+
+EXCLUDE completely (do not list):
+- Cheek / forehead / hand kisses, quick pecks
+- Violence, guns, killing, fighting, blood
+- Language, drugs, horror, or any non-sexual content
+- Swimwear or underwear without clear private-part exposure
+
+Rules:
+- Be consistent: for the same movie/year, return the same scenes and times every time.
+- List scenes in chronological order.
+- Times must be approximate with ~ (example: ~01:12:00-01:14:30).
+- Max 8 scenes. Short descriptions (under 12 words).
+- If none of the INCLUDE scenes exist: has_inappropriate_content=false and estimated_scenes=[].
+
+Return JSON only:
+{{
+  "has_inappropriate_content": true,
+  "estimated_scenes": [
+    {{"category": "Kissing", "estimated_time": "~00:45:00-00:46:00", "description": "Mouth-to-mouth romantic kiss"}}
+  ]
+}}
+
+category must be exactly one of: Kissing, Sexual Content, Nudity."""
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                # Thinking models consume tokens before visible output;
-                # keep this high enough for a complete JSON reply.
                 "maxOutputTokens": 2048,
-                "temperature": 0.1,
+                "temperature": 0,
+                "topP": 1,
+                "topK": 1,
                 "responseMimeType": "application/json",
             },
         }
@@ -113,21 +125,85 @@ class MovieAIService:
             }
 
     def _call_gemini(self, api_key: str, payload: Dict[str, Any]) -> str:
-        url = f"{GEMINI_API_URL}?key={api_key}"
-        request = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        data = json.dumps(payload).encode("utf-8")
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        last_error: Optional[Exception] = None
+
+        for model in GEMINI_MODELS:
+            url = f"{GEMINI_API_URL_TEMPLATE.format(model=model)}?key={api_key}"
+            for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
+                request = urllib.request.Request(
+                    url,
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=GEMINI_TIMEOUT_SECONDS,
+                        context=ssl_context,
+                    ) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    logger.info("Gemini success with model=%s", model)
+                    return self._extract_text(body)
+                except urllib.error.HTTPError as exc:
+                    error_body = exc.read().decode("utf-8", errors="replace")
+                    last_error = RuntimeError(
+                        f"Gemini HTTP {exc.code} ({model}): {error_body}"
+                    )
+                    # Try next model on model-not-found / overload / quota
+                    if exc.code in (404, 429, 503):
+                        if (
+                            exc.code in (429, 503)
+                            and attempt < GEMINI_MAX_ATTEMPTS
+                        ):
+                            wait_seconds = 2 ** attempt
+                            logger.warning(
+                                "Gemini HTTP %s on %s (attempt %s/%s). "
+                                "Retrying in %ss",
+                                exc.code,
+                                model,
+                                attempt,
+                                GEMINI_MAX_ATTEMPTS,
+                                wait_seconds,
+                            )
+                            time.sleep(wait_seconds)
+                            continue
+                        logger.warning(
+                            "Gemini HTTP %s on %s — trying next model",
+                            exc.code,
+                            model,
+                        )
+                        break
+                    raise last_error from exc
+                except (socket.timeout, TimeoutError, urllib.error.URLError) as exc:
+                    last_error = exc
+                    if attempt < GEMINI_MAX_ATTEMPTS:
+                        wait_seconds = 2 ** attempt
+                        logger.warning(
+                            "Gemini timeout on %s (attempt %s/%s): %s. "
+                            "Retrying in %ss",
+                            model,
+                            attempt,
+                            GEMINI_MAX_ATTEMPTS,
+                            exc,
+                            wait_seconds,
+                        )
+                        time.sleep(wait_seconds)
+                        continue
+                    logger.warning(
+                        "Gemini timed out on %s — trying next model", model
+                    )
+                    break
+
+        raise RuntimeError(
+            str(last_error)
+            if last_error
+            else "Gemini request timed out. Please try again in a moment."
         )
 
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Gemini HTTP {exc.code}: {error_body}") from exc
-
+    def _extract_text(self, body: Dict[str, Any]) -> str:
         candidates = body.get("candidates") or []
         if not candidates:
             raise RuntimeError(f"Gemini returned no candidates: {body}")
@@ -141,7 +217,6 @@ class MovieAIService:
                 f"Gemini returned empty text (finishReason={finish_reason}): {body}"
             )
 
-        # Join without newlines so split JSON fragments reassemble cleanly
         text = "".join(text_parts).strip()
         if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
             logger.warning("Gemini finishReason=%s", finish_reason)
@@ -167,7 +242,7 @@ class MovieAIService:
             estimated_scenes = []
 
         normalized_scenes: List[Dict[str, str]] = []
-        for scene in estimated_scenes[:5]:
+        for scene in estimated_scenes[:8]:
             if not isinstance(scene, dict):
                 continue
             normalized_scenes.append(
