@@ -1,232 +1,282 @@
 # FS Backend — Movie Cut Scenes API
 
-FastAPI backend for storing and retrieving skipped scenes in **movies** and **web series episodes**, plus **AI-powered scene previews** (Gemini).
+A **FastAPI** backend that powers a mobile app for skipping inappropriate scenes in **movies** and **web series episodes**. It stores exact cut timestamps in **PostgreSQL** and can suggest estimated scenes using **Google Gemini AI** when no saved data exists.
 
 **Production:** https://fsbackend-production-8079.up.railway.app  
-**API docs:** https://fsbackend-production-8079.up.railway.app/docs
+**Interactive API docs:** https://fsbackend-production-8079.up.railway.app/docs
+
+> **New here?** Follow [`GETTING_STARTED.md`](./GETTING_STARTED.md) for installation and local setup.
 
 ---
 
-## Features
+## What this project is
 
-- Movies with `title` + `release_year` (distinguishes remakes)
-- Web series episodes (`series_title`, season, episode)
-- Cut scenes with fixed reasons: `violence`, `inappropriate`, `eighteen_plus`
-- Autocomplete movie suggestions
-- Exists / create / read / update / delete
-- AI preview (Gemini): estimated kissing / sexual content / nudity timelines
+This is the **server-side API** for a content-filtering video experience. Users (via a React Native app) can:
 
----
+1. Select a movie or web series episode  
+2. See if cut-scene data already exists  
+3. Get **AI estimates** for kissing / sexual content / nudity scenes  
+4. Save, play with, edit, or delete exact skip segments  
 
-## Project structure
-
-```
-fs_backend/
-├── main.py           # FastAPI app entry
-├── config.py         # Env / DATABASE_URL / GEMINI_API_KEY
-├── database.py       # SQLAlchemy engine + schema init
-├── models.py         # Movie, Episode, CutScene tables
-├── schemas.py        # Pydantic request/response models
-├── routes.py         # API endpoints
-├── ai_service.py     # Gemini AI scene preview
-├── requirements.txt
-├── railway.toml
-├── .env.example
-└── README.md
-```
+The backend is the source of truth for skip data and AI previews.
 
 ---
 
-## Prerequisites
+## What problem it solves
 
-- Python **3.10+** recommended (3.12 works on Railway)
-- PostgreSQL (local or Railway)
-- Optional: [Gemini API key](https://aistudio.google.com/apikey) for AI preview
+Watching movies or series often includes scenes some viewers want to skip (kissing, nudity, sexual content). Doing that well requires:
 
----
-
-## Quick start (local)
-
-### 1. Clone and enter the repo
-
-```bash
-git clone <your-repo-url>
-cd fs_backend
-```
-
-### 2. Create a virtual environment
-
-```bash
-python3 -m venv venv
-source venv/bin/activate          # macOS / Linux
-# venv\Scripts\activate           # Windows
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-
-```env
-# Local Postgres example
-DATABASE_URL=postgresql://apple@localhost/movies_db
-
-# Or Railway public URL
-# DATABASE_URL=postgresql://postgres:PASSWORD@xxxx.proxy.rlwy.net:PORT/railway
-
-# Required for AI preview endpoints
-GEMINI_API_KEY=your_gemini_api_key_here
-```
-
-### 5. Create the database (local Postgres)
-
-```bash
-createdb movies_db
-```
-
-Tables are created automatically on app startup.
-
-### 6. Run the server
-
-```bash
-# Local only (Mac / browser)
-uvicorn main:app --reload
-
-# Physical phone on same Wi‑Fi
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-- API: http://127.0.0.1:8000  
-- Interactive docs: http://127.0.0.1:8000/docs  
-- Health: http://127.0.0.1:8000/
+| Challenge | How this project handles it |
+|-----------|----------------------------|
+| Same title, different remakes | Movies identified by **title + release year** |
+| Web series structure | Episodes identified by **series + season + episode** |
+| Shared / reusable skip data | Stored in PostgreSQL and fetched by ID or search |
+| No data yet for a title | Gemini AI returns **estimated** timelines as a starting point |
+| Consistent skip reasons | Fixed enums — no free-text reasons on create/update |
 
 ---
 
-## Environment variables
+## What it does
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | Postgres connection string |
-| `DATABASE_PUBLIC_URL` | No | Used if set (preferred for cross-project Railway) |
-| `GEMINI_API_KEY` | For AI | Google AI Studio key for preview endpoints |
-| `PORT` | Railway | Set automatically by Railway |
+### Core product behavior
 
-`config.py` converts `postgres://` / `postgresql://` to `postgresql+psycopg://` for SQLAlchemy.
+- **Create** movies or episodes with a list of cut scenes (`start`, `end`, `reason`)
+- **Search / load** existing cut scenes for playback
+- **Check existence** so the app can show “Play” or “Edit”
+- **Update** cut scenes (full replace) or **delete** a title
+- **Autocomplete** movie titles as the user types
+- **AI preview** of estimated kissing / sex / nudity scenes when DB has nothing
+
+### Manual cut-scene reasons (saved in DB)
+
+| Value | Meaning |
+|-------|---------|
+| `violence` | Violence |
+| `inappropriate` | Inappropriate |
+| `eighteen_plus` | 18+ / adult content |
+
+### AI preview categories (estimates only)
+
+| Category | Meaning |
+|----------|---------|
+| `Kissing` | Mouth-to-mouth / French kiss |
+| `Sexual Content` | Intercourse or clear sexual activity |
+| `Nudity` | Naked body or private parts shown |
+
+AI times use approximate ranges like `~01:12:00-01:14:30`. They are **not** exact frame times — the app should confirm with frame-by-frame preview before saving.
 
 ---
 
-## Main API overview
+## Tech stack
+
+| Area | Choice |
+|------|--------|
+| Language | Python |
+| API framework | FastAPI |
+| Validation | Pydantic v2 |
+| ORM | SQLAlchemy 2.x |
+| Database | PostgreSQL |
+| Driver | psycopg 3 |
+| AI | Google Gemini (`gemini-flash-lite-latest`, fallback `gemini-flash-latest`) |
+| Config | python-dotenv |
+| Server | Uvicorn |
+| Hosting | Railway |
+
+---
+
+## Architecture
+
+```
+React Native app
+       │
+       ▼
+ FastAPI (routes + Pydantic schemas)
+       │
+  ┌────┴────┐
+  ▼         ▼
+PostgreSQL   Gemini AI service
+(exact cuts) (estimated scenes)
+```
+
+### Code layout
+
+| File | Role |
+|------|------|
+| `main.py` | App entry, CORS, lifespan / DB init |
+| `config.py` | Env loading, `DATABASE_URL`, `GEMINI_API_KEY` |
+| `database.py` | Engine, sessions, schema create / migrate |
+| `models.py` | SQLAlchemy tables: `Movie`, `Episode`, `CutScene` |
+| `schemas.py` | Request/response contracts and enums |
+| `routes.py` | All HTTP endpoints under `/api` |
+| `ai_service.py` | Gemini prompt + call + JSON parse + retries |
+| `railway.toml` | Production start command |
+| `.env.example` | Documented env vars (no secrets) |
+
+### Design approach
+
+- **Layered API:** HTTP routes → schemas → models / AI service  
+- **Create vs edit:** `POST` creates only (`409` if duplicate); `PUT` replaces cut scenes  
+- **Exists-first UX:** clients call `/exists` before Play / Edit  
+- **Shared cut table:** `cut_scenes` serves both movies and episodes via `content_type` + `reference_id`  
+- **Strict validation:** skip reasons are enums; invalid values return `422`  
+- **AI as fallback:** prefer DB exact data; call Gemini only when needed  
+- **Resilient AI calls:** SSL via certifi, retries, model fallback on overload  
+
+---
+
+## Database
+
+### `movies`
+
+| Column | Notes |
+|--------|--------|
+| `movie_id` | Unique string ID (e.g. `inception_2010`) |
+| `title` | Display title |
+| `release_year` | Distinguishes remakes |
+| `duration` | Total length in seconds |
+| `created_at` | Timestamp |
+
+**Unique:** `(title, release_year)`
+
+### `episodes`
+
+| Column | Notes |
+|--------|--------|
+| `episode_id` | Unique ID (auto-generated slug if omitted) |
+| `series_title` | Show name |
+| `season_number` | ≥ 1 |
+| `episode_number` | ≥ 1 |
+| `duration` | Episode length in seconds |
+| `created_at` | Timestamp |
+
+**Unique:** `(series_title, season_number, episode_number)`  
+**Example ID:** `breaking_bad_s1_e3`
+
+### `cut_scenes`
+
+| Column | Notes |
+|--------|--------|
+| `content_type` | `movie` or `episode` |
+| `reference_id` | `movie_id` or `episode_id` |
+| `start_time` / `end_time` | Seconds |
+| `reason` | Enum string |
+
+Indexed on `reference_id` for fast lookups.
+
+---
+
+## API surface
+
+Base path: `/api`
 
 ### Movies
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `GET` | `/api/movie/suggestions?query=` | Autocomplete by title |
-| `GET` | `/api/movie/exists?title=&release_year=` | Check if movie exists |
-| `POST` | `/api/movie` | Create movie + cut scenes |
-| `GET` | `/api/movie/search?title=&release_year=` | Get by title + year |
-| `GET` | `/api/movie/{movie_id}` | Get by ID |
-| `PUT` | `/api/movie/{movie_id}` | Update movie + replace cut scenes |
-| `DELETE` | `/api/movie/{movie_id}` | Delete movie |
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/movie/suggestions` | Title autocomplete |
+| `GET` | `/movie/exists` | Exists + scene count |
+| `POST` | `/movie` | Create movie + cut scenes |
+| `GET` | `/movie/search` | Get by title + year |
+| `GET` | `/movie/{movie_id}` | Get by ID |
+| `PUT` | `/movie/{movie_id}` | Update + replace cut scenes |
+| `DELETE` | `/movie/{movie_id}` | Delete movie + scenes |
 
 ### Episodes
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `GET` | `/api/episode/exists?series_title=&season_number=&episode_number=` | Check exists |
-| `POST` | `/api/episode` | Create episode + cut scenes |
-| `GET` | `/api/episode/search?...` | Get by series + season + episode |
-| `GET` | `/api/episode/{episode_id}` | Get by ID |
-| `PUT` | `/api/episode/{episode_id}` | Update episode + replace cut scenes |
-| `DELETE` | `/api/episode/{episode_id}` | Delete episode |
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/episode/exists` | Exists + scene count |
+| `POST` | `/episode` | Create episode + cut scenes |
+| `GET` | `/episode/search` | Get by series / season / episode |
+| `GET` | `/episode/{episode_id}` | Get by ID |
+| `PUT` | `/episode/{episode_id}` | Update + replace cut scenes |
+| `DELETE` | `/episode/{episode_id}` | Delete episode + scenes |
 
-### AI preview (movies)
+### AI scene preview (movies)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| `POST` | `/api/movie/{movie_id}/preview-scenes?title=&release_year=` | Always query Gemini |
-| `GET` | `/api/movie/{movie_id}/preview-scenes?title=&release_year=` | DB first, else Gemini |
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/movie/{movie_id}/preview-scenes` | Always query Gemini |
+| `GET` | `/movie/{movie_id}/preview-scenes` | Prefer DB; else Gemini |
 
-AI categories: `Kissing`, `Sexual Content`, `Nudity` only.
+Both take query params: `title`, `release_year`.
 
 ### Other
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
+| Method | Path | Purpose |
+|--------|------|---------|
 | `GET` | `/` | Health check |
-| `GET` | `/api/skip-reasons` | Dropdown options for cut reasons |
-
-Full interactive docs: `/docs`
-
----
-
-## Example: create a movie
-
-```bash
-curl -X POST "http://127.0.0.1:8000/api/movie" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "movie_id": "inception_2010",
-    "title": "Inception",
-    "release_year": 2010,
-    "duration": 8880,
-    "cut_scenes": [
-      { "start": 120.0, "end": 145.0, "reason": "violence" }
-    ]
-  }'
-```
-
-## Example: AI preview
-
-```bash
-curl -X POST "http://127.0.0.1:8000/api/movie/inception-2010/preview-scenes?title=Inception&release_year=2010"
-```
+| `GET` | `/api/skip-reasons` | Labels for manual reason dropdown |
+| `GET` | `/docs` | Swagger UI |
 
 ---
 
-## Deploy on Railway
+## Typical client flows
 
-1. Create a Railway project with **PostgreSQL** + this GitHub repo (same project preferred).
-2. Set variables on the API service:
-   - `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` (variable reference), **or** public URL if DB is in another project
-   - `GEMINI_API_KEY` = your Gemini key
-3. Deploy. Start command is already in `railway.toml`:
+### New movie — save cuts
 
-```toml
-startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
-```
+1. User enters title + year (+ optional AI preview)  
+2. `POST /api/movie` with `cut_scenes`  
+3. App stores returned `id` / plays with exact seconds  
 
-4. Open the generated `*.up.railway.app` URL and `/docs`.
+### Existing movie — play or edit
+
+1. `GET /api/movie/exists?title=&release_year=`  
+2. If `exists: true` → offer Play or Edit  
+3. Play: `GET /api/movie/{movie_id}` or `/movie/search`  
+4. Edit: load scenes → user changes list → `PUT /api/movie/{movie_id}`  
+
+### No DB data — AI assist
+
+1. `GET` or `POST` `.../preview-scenes`  
+2. Show estimated scenes (`source: "ai_preview"`)  
+3. User confirms timings → save via `POST` / `PUT` with enum reasons  
+
+### Web series episode
+
+Same pattern as movies, using `/api/episode/*` and series / season / episode fields.
 
 ---
 
-## Cut scene reasons (manual skip)
+## AI service behavior
 
-Frontend dropdown values (not free text):
-
-| Value | Label |
-|-------|-------|
-| `violence` | Violence |
-| `inappropriate` | Inappropriate |
-| `eighteen_plus` | 18+ |
+- Prompt is constrained to **Kissing**, **Sexual Content**, and **Nudity** only  
+- Explicitly ignores violence, guns, fighting, cheek kisses, etc.  
+- Responses are JSON-only; times are approximate (`~`)  
+- Generation uses low/zero temperature for more stable suggestions  
+- On failure: retries, then falls back to another Gemini model when possible  
 
 ---
 
-## Notes
+## Environment (overview)
 
-- `POST` is **create-only** (returns `409` if already exists). Use `PUT` to edit.
-- Check `GET /exists` before showing Play / Edit UI.
-- AI times are **estimates** (`~20:30-23:45`), not exact seconds.
-- Do not commit `.env` (it is gitignored).
+| Variable | Used for |
+|----------|----------|
+| `DATABASE_URL` | PostgreSQL connection |
+| `DATABASE_PUBLIC_URL` | Optional public Railway URL override |
+| `GEMINI_API_KEY` | AI preview endpoints |
+| `PORT` | Bound automatically on Railway |
+
+Secrets belong in `.env` / Railway Variables — never commit real keys.
+
+---
+
+## Deployment
+
+Deployed on **Railway** with PostgreSQL. The API listens on `0.0.0.0:$PORT` (see `railway.toml`). For physical devices during local development, the server must bind to `0.0.0.0` and the app uses the Mac’s LAN IP.
+
+---
+
+## Related docs
+
+| Doc | Status |
+|-----|--------|
+| `README.md` | Project overview (what / why / how it works) |
+| `PRD.md` | Product requirements for developers |
+| `ARCHITECTURE.md` | Full system design, data models, tech stack |
+| `ARCHITECTURE-ESSENTIALS.md` | Critical decisions only (quick reference) |
+| `AGENTS.md` | Instructions for AI agents working in this repo |
+| `GETTING_STARTED.md` | Installation, env setup, run locally / Railway |
 
 ---
 
